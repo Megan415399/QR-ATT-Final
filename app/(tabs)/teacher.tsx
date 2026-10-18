@@ -1,10 +1,9 @@
-
 import Ionicons from '@expo/vector-icons/Ionicons';
 import DateTimePicker, {
   type DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -90,6 +89,7 @@ type EditTarget = 'start' | 'end';
 
 export default function TeacherScreen() {
   const { user } = useAuth();
+  const scrollRef = useRef<ScrollView>(null);
 
   const [role, setRole] = useState<Role | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
@@ -120,9 +120,15 @@ export default function TeacherScreen() {
 
   const isAndroid = Platform.OS === 'android';
 
+  const scrollToTop = () => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  };
+
   const showMessage = (text: string, isError = false) => {
     setMessage(text);
     setMessageIsError(isError);
+    // The message is shown at the top, so scroll up to make it visible.
+    scrollToTop();
   };
 
   const loadEvents = useCallback(async () => {
@@ -347,35 +353,41 @@ export default function TeacherScreen() {
   };
 
   const handleEditEvent = (event: CloudEvent) => {
-    if (!event.start_time || !event.end_time) {
-      showMessage('This event has no valid start or end time.', true);
-      return;
-    }
+    const parsedStart = event.start_time ? new Date(event.start_time) : null;
+    const parsedEnd = event.end_time ? new Date(event.end_time) : null;
 
-    const start = new Date(event.start_time);
-    const end = new Date(event.end_time);
+    const startValid = !!parsedStart && Number.isFinite(parsedStart.getTime());
+    const endValid = !!parsedEnd && Number.isFinite(parsedEnd.getTime());
 
-    if (
-      !Number.isFinite(start.getTime()) ||
-      !Number.isFinite(end.getTime())
-    ) {
-      showMessage('The event dates are invalid.', true);
-      return;
-    }
+    // If the event has no valid time, start with default times
+    // (start = now, end = +1 hour) so it can still be edited.
+    const nextStart = startValid
+      ? startOfMinute(parsedStart as Date)
+      : startOfMinute(new Date());
+
+    const nextEnd = endValid
+      ? startOfMinute(parsedEnd as Date)
+      : startOfMinute(new Date(nextStart.getTime() + 60 * 60 * 1000));
 
     setEditingEventId(event.id);
     setTitle(event.title);
     setEventId(event.event_code);
     setVenue(event.venue ?? '');
     setDescription(event.description ?? '');
-    setStartDate(startOfMinute(start));
-    setEndDate(startOfMinute(end));
+    setStartDate(nextStart);
+    setEndDate(nextEnd);
     setEditTarget(null);
     setEditingPart('date');
     setPayload(null);
     setQrEvent(null);
-    setMessage(`Editing event: ${event.title}`);
-    setMessageIsError(false);
+
+    if (!startValid || !endValid) {
+      showMessage(
+        `Editing: ${event.title}. This event had no start/end time, so default times were filled in. Please set the correct times, then save.`
+      );
+    } else {
+      showMessage(`Editing event: ${event.title}`);
+    }
   };
 
   const handleSaveEventChanges = async () => {
@@ -532,6 +544,7 @@ export default function TeacherScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -541,6 +554,24 @@ export default function TeacherScreen() {
         Create events, generate QR codes, edit details, and open or close
         attendance.
       </Text>
+
+      {message && (
+        <View
+          style={[
+            styles.messageBox,
+            messageIsError && styles.errorMessageBox,
+          ]}
+        >
+          <Text
+            style={[
+              styles.message,
+              messageIsError && styles.errorMessage,
+            ]}
+          >
+            {message}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>
@@ -897,7 +928,7 @@ export default function TeacherScreen() {
                         creating ||
                         !!updatingEventId ||
                         (role === 'teacher' && isEnded)
-                     }
+                      }
                     />
                   </View>
 
@@ -932,17 +963,6 @@ export default function TeacherScreen() {
           })
         )}
       </View>
-
-      {message && (
-        <Text
-          style={[
-            styles.message,
-            messageIsError && styles.errorMessage,
-          ]}
-        >
-          {message}
-        </Text>
-      )}
     </ScrollView>
   );
 }
@@ -1130,12 +1150,20 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginBottom: 6,
   },
+  messageBox: {
+    backgroundColor: '#E4F4EA',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  errorMessageBox: {
+    backgroundColor: '#FCE8E6',
+  },
   message: {
     fontSize: 14,
     color: COLORS.primary,
     textAlign: 'center',
-    marginTop: 12,
-    marginBottom: 8,
   },
   errorMessage: {
     color: '#B3261E',
