@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "qr-attendance",
     "userInterfaceStyle": "light",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true
     },
@@ -39,13 +39,21 @@
       ],
       "expo-sqlite",
       "@react-native-community/datetimepicker",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow QR-ATT to access your camera to scan event QR codes."
+        }
+      ]
     ],
     "experiments": {
       "reactCompiler": false
     },
     "extra": {
-      "router": {},
+      "router": {
+        "root": "app"
+      },
       "eas": {
         "projectId": "30e9d2c0-e86c-44d9-98d1-b4c2260d01ba"
       }
