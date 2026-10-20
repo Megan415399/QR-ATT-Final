@@ -30,22 +30,15 @@ export function initializeAuth() {
   if (initialized) return;
   initialized = true;
 
+  // Listen for login, logout, and session changes.
   supabase.auth.onAuthStateChange((_event, session) => {
     setAuth(session);
   });
 
-  const timeout = setTimeout(() => {
-    if (globalLoading) {
-      console.warn('Auth initialization timed out.');
-      setAuth(null);
-    }
-  }, 10000);
-
-  supabase.auth
+  // Get the current session once.
+  void supabase.auth
     .getSession()
     .then(({ data, error }) => {
-      clearTimeout(timeout);
-
       if (error) {
         console.error('Get session failed:', error.message);
         setAuth(null);
@@ -55,7 +48,6 @@ export function initializeAuth() {
       setAuth(data.session);
     })
     .catch((error: unknown) => {
-      clearTimeout(timeout);
       console.error('Auth initialization failed:', error);
       setAuth(null);
     });
@@ -66,8 +58,8 @@ export function useAuth(): AuthState {
 
   useEffect(() => {
     const listener = () => forceRender((n) => n + 1);
-    listeners.add(listener);
 
+    listeners.add(listener);
     initializeAuth();
 
     return () => {

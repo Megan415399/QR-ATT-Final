@@ -35,6 +35,59 @@ function toIso(value: string | undefined): string | null {
   return date.toISOString();
 }
 
+function hasEnded(endTime: string | null | undefined): boolean {
+  if (!endTime) return false;
+
+  const time = new Date(endTime).getTime();
+
+  return Number.isFinite(time) && time <= Date.now();
+}
+
+async function getCurrentUserAndRole() {
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    return {
+      user: null,
+      role: null,
+      error: 'Please log in before managing events.',
+    };
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (profileError || !profile) {
+    console.error('Could not verify user role:', profileError?.message);
+
+    return {
+      user: null,
+      role: null,
+      error: 'Could not verify your account permissions.',
+    };
+  }
+
+  if (profile.role !== 'teacher' && profile.role !== 'admin') {
+    return {
+      user: null,
+      role: null,
+      error: 'Only teachers and administrators can manage events.',
+    };
+  }
+
+  return {
+    user,
+    role: profile.role as 'teacher' | 'admin',
+    error: null,
+  };
+}
+
 export async function createEvent(
   event: Event
 ): Promise<{ error: string | null }> {
@@ -55,11 +108,11 @@ export async function createEvent(
     return { error: 'Event title must be 150 characters or fewer.' };
   }
 
-  if (event.start && event.start.trim() && !toIso(event.start)) {
+  if (event.start.trim() && !toIso(event.start)) {
     return { error: 'Please enter a valid start date and time.' };
   }
 
-  if (event.end && event.end.trim() && !toIso(event.end)) {
+  if (event.end.trim() && !toIso(event.end)) {
     return { error: 'Please enter a valid end date and time.' };
   }
 
@@ -72,36 +125,14 @@ export async function createEvent(
     ).toISOString();
 
   if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
-    return {
-      error: 'The event end time must be after the start time.',
-    };
+    return { error: 'The event end time must be after the start time.' };
   }
 
   try {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const access = await getCurrentUserAndRole();
 
-    if (userError || !user) {
-      return { error: 'Please log in before creating an event.' };
-    }
-
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    if (profileError || !profile) {
-      console.error('Could not verify user role:', profileError?.message);
-      return { error: 'Could not verify your account permissions.' };
-    }
-
-    if (profile.role !== 'teacher' && profile.role !== 'admin') {
-      return {
-        error: 'Only teachers and administrators can create events.',
-      };
+    if (!access.user || !access.role) {
+      return { error: access.error };
     }
 
     const { data: existingEvent, error: lookupError } = await supabase
@@ -112,6 +143,7 @@ export async function createEvent(
 
     if (lookupError) {
       console.error('Event lookup failed:', lookupError.message);
+
       return {
         error: 'Could not check whether this event code already exists.',
       };
@@ -130,7 +162,7 @@ export async function createEvent(
       end_time: endIso,
       venue: venue || null,
       description: description || null,
-      created_by: user.id,
+      created_by: access.user.id,
       status: 'open',
     });
 
@@ -151,6 +183,7 @@ export async function createEvent(
     return { error: null };
   } catch (error) {
     console.error('Unexpected event creation error:', error);
+
     return { error: 'Something went wrong while creating the event.' };
   }
 }
@@ -234,12 +267,6 @@ export async function getEventByCode(
   return data as CloudEvent | null;
 }
 
-/**
- * Opens or closes an event.
- * Teachers can update their own events.
- * Administrators can update any event, subject to database RLS.
- * An event cannot be reopened after its end time.
- */
 export async function updateEventStatus(
   eventId: string,
   status: 'open' | 'closed'
@@ -253,80 +280,52 @@ export async function updateEventStatus(
   }
 
   try {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const access = await getCurrentUserAndRole();
 
-    if (userError || !user) {
-      return { error: 'Please log in before updating an event.' };
+    if (!access.user || !access.role) {
+      return { error: access.error };
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .maybeSingle();
+    let eventQuery = supabase
+      .from('events')
+      .select('id, end_time, created_by')
+      .eq('id', eventId);
 
-    if (profileError || !profile) {
-      return { error: 'Could not verify your account permissions.' };
+    if (access.role === 'teacher') {
+      eventQuery = eventQuery.eq('created_by', access.user.id);
     }
 
-    if (profile.role !== 'teacher' && profile.role !== 'admin') {
+    const { data: event, error: eventError } =
+      await eventQuery.maybeSingle();
+
+    if (eventError) {
+      console.error('Could not check event:', eventError.message);
+
+      return { error: 'Could not verify this event. Please try again.' };
+    }
+
+    if (!event) {
       return {
-        error: 'Only teachers and administrators can update event status.',
+        error: 'Event not found or you do not have permission to update it.',
       };
     }
 
-    if (status === 'open') {
-      let eventQuery = supabase
-        .from('events')
-        .select('id, end_time')
-        .eq('id', eventId);
-
-      if (profile.role === 'teacher') {
-        eventQuery = eventQuery.eq('created_by', user.id);
-      }
-
-      const { data: event, error: eventError } =
-        await eventQuery.maybeSingle();
-
-      if (eventError) {
-        console.error('Could not check event end time:', eventError.message);
-        return {
-          error: 'Could not verify the event end time. Please try again.',
-        };
-      }
-
-      if (!event) {
-        return {
-          error: 'Event not found or you do not have permission to update it.',
-        };
-      }
-
-      if (
-        event.end_time &&
-        new Date(event.end_time).getTime() <= Date.now()
-      ) {
-        return {
-          error: 'This event has already ended and cannot be reopened.',
-        };
-      }
+    // Ended events cannot have their status changed by either role.
+    if (hasEnded(event.end_time)) {
+      return {
+        error: 'This event has ended. Its status can no longer be changed.',
+      };
     }
 
-    let query = supabase
+    const { data, error } = await supabase
       .from('events')
       .update({ status })
-      .eq('id', eventId);
-
-    if (profile.role === 'teacher') {
-      query = query.eq('created_by', user.id);
-    }
-
-    const { data, error } = await query.select('id');
+      .eq('id', eventId)
+      .select('id');
 
     if (error) {
       console.error('Event status update failed:', error.message);
+
       return {
         error: 'Could not update event status. Check your database permissions.',
       };
@@ -341,13 +340,13 @@ export async function updateEventStatus(
     return { error: null };
   } catch (error) {
     console.error('Unexpected event status error:', error);
+
     return {
-      error: 'Something went wrong while updating event status.',
+      error: 'Something went wrong while updating the event.',
     };
   }
 }
 
-// Update event details. The event code is kept unchanged.
 export async function updateEventDetails(
   eventId: string,
   event: Event
@@ -378,38 +377,51 @@ export async function updateEventDetails(
   }
 
   if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
-    return {
-      error: 'The event end time must be after the start time.',
-    };
+    return { error: 'The event end time must be after the start time.' };
   }
 
   try {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const access = await getCurrentUserAndRole();
 
-    if (userError || !user) {
-      return { error: 'Please log in before editing an event.' };
+    if (!access.user || !access.role) {
+      return { error: access.error };
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .maybeSingle();
+    let eventQuery = supabase
+      .from('events')
+      .select('id, end_time, created_by')
+      .eq('id', eventId);
 
-    if (profileError || !profile) {
-      return { error: 'Could not verify your account permissions.' };
+    if (access.role === 'teacher') {
+      eventQuery = eventQuery.eq('created_by', access.user.id);
     }
 
-    if (profile.role !== 'teacher' && profile.role !== 'admin') {
+    const { data: existingEvent, error: lookupError } =
+      await eventQuery.maybeSingle();
+
+    if (lookupError) {
+      console.error('Could not check event before editing:', lookupError.message);
+
+      return { error: 'Could not verify the event before editing.' };
+    }
+
+    if (!existingEvent) {
       return {
-        error: 'Only teachers and administrators can edit events.',
+        error: 'Event not found or you do not have permission to edit it.',
       };
     }
 
-    let query = supabase
+    // Teachers cannot edit ended events. Admins can.
+    if (
+      access.role === 'teacher' &&
+      hasEnded(existingEvent.end_time)
+    ) {
+      return {
+        error: 'This event has ended. Teachers cannot edit ended events.',
+      };
+    }
+
+    const { data, error } = await supabase
       .from('events')
       .update({
         title,
@@ -418,16 +430,12 @@ export async function updateEventDetails(
         venue: venue || null,
         description: description || null,
       })
-      .eq('id', eventId);
-
-    if (profile.role === 'teacher') {
-      query = query.eq('created_by', user.id);
-    }
-
-    const { data, error } = await query.select('id');
+      .eq('id', eventId)
+      .select('id');
 
     if (error) {
       console.error('Event details update failed:', error.message);
+
       return {
         error: 'Could not edit event details. Check database permissions.',
       };
@@ -442,16 +450,13 @@ export async function updateEventDetails(
     return { error: null };
   } catch (error) {
     console.error('Unexpected event details error:', error);
+
     return {
       error: 'Something went wrong while editing the event.',
     };
   }
 }
 
-/**
- * Gets events that students can still attend.
- * Only open events that have not ended are included.
- */
 export async function getAvailableEvents(): Promise<CloudEvent[]> {
   try {
     const { data, error } = await supabase
@@ -470,9 +475,7 @@ export async function getAvailableEvents(): Promise<CloudEvent[]> {
     const now = Date.now();
 
     return ((data ?? []) as CloudEvent[]).filter((event) => {
-      if (!event.end_time) {
-        return false;
-      }
+      if (!event.end_time) return false;
 
       const endTime = new Date(event.end_time).getTime();
 
@@ -480,6 +483,7 @@ export async function getAvailableEvents(): Promise<CloudEvent[]> {
     });
   } catch (error) {
     console.error('Unexpected available events error:', error);
+
     return [];
   }
 }

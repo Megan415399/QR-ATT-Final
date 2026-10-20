@@ -1,3 +1,4 @@
+
 import Ionicons from '@expo/vector-icons/Ionicons';
 import DateTimePicker, {
   type DateTimePickerEvent,
@@ -127,7 +128,6 @@ export default function TeacherScreen() {
   const showMessage = (text: string, isError = false) => {
     setMessage(text);
     setMessageIsError(isError);
-    // The message is shown at the top, so scroll up to make it visible.
     scrollToTop();
   };
 
@@ -335,12 +335,11 @@ export default function TeacherScreen() {
         return;
       }
 
-      const nextPayload = buildQRPayload(event);
-      setPayload(nextPayload);
+      setPayload(buildQRPayload(event));
       setQrEvent(null);
 
       showMessage('Event saved successfully! You can now scan the QR code.');
-      void loadEvents();
+      await loadEvents();
     } catch (error) {
       console.error('Create event or QR generation failed:', error);
       showMessage(
@@ -352,15 +351,22 @@ export default function TeacherScreen() {
     }
   };
 
+  // Teachers cannot edit ended events. Administrators can.
   const handleEditEvent = (event: CloudEvent) => {
+    if (role === 'teacher' && hasEventEnded(event)) {
+      showMessage(
+        'This event has ended. Teachers cannot edit ended events.',
+        true
+      );
+      return;
+    }
+
     const parsedStart = event.start_time ? new Date(event.start_time) : null;
     const parsedEnd = event.end_time ? new Date(event.end_time) : null;
 
     const startValid = !!parsedStart && Number.isFinite(parsedStart.getTime());
     const endValid = !!parsedEnd && Number.isFinite(parsedEnd.getTime());
 
-    // If the event has no valid time, start with default times
-    // (start = now, end = +1 hour) so it can still be edited.
     const nextStart = startValid
       ? startOfMinute(parsedStart as Date)
       : startOfMinute(new Date());
@@ -383,11 +389,13 @@ export default function TeacherScreen() {
 
     if (!startValid || !endValid) {
       showMessage(
-        `Editing: ${event.title}. This event had no start/end time, so default times were filled in. Please set the correct times, then save.`
+        `Editing: ${event.title}. Please set the correct start and end times before saving.`
       );
     } else {
       showMessage(`Editing event: ${event.title}`);
     }
+
+    scrollToTop();
   };
 
   const handleSaveEventChanges = async () => {
@@ -400,6 +408,22 @@ export default function TeacherScreen() {
 
     if (endDate.getTime() <= startDate.getTime()) {
       showMessage('End time must be after start time.', true);
+      return;
+    }
+
+    // Recheck before saving. Only teachers are blocked from editing ended events.
+    const originalEvent = events.find((event) => event.id === editingEventId);
+
+    if (
+      role === 'teacher' &&
+      originalEvent &&
+      hasEventEnded(originalEvent)
+    ) {
+      showMessage(
+        'This event has ended. Teachers cannot edit ended events.',
+        true
+      );
+      resetForm();
       return;
     }
 
@@ -424,15 +448,7 @@ export default function TeacherScreen() {
         return;
       }
 
-      setEditingEventId(null);
-      setTitle('');
-      setEventId('');
-      setVenue('');
-      setDescription('');
-      setStartDate(startOfMinute(new Date()));
-      setEndDate(startOfMinute(new Date(Date.now() + 60 * 60 * 1000)));
-      setEditTarget(null);
-
+      resetForm();
       showMessage('Event details updated successfully.');
       await loadEvents();
     } catch (error) {
@@ -448,7 +464,18 @@ export default function TeacherScreen() {
     showMessage('Editing cancelled.');
   };
 
+  // Ended events cannot display their QR code.
   const handleViewQR = (event: CloudEvent) => {
+    if (hasEventEnded(event)) {
+      setPayload(null);
+      setQrEvent(null);
+      showMessage(
+        'This event has ended. Its QR code can no longer be used.',
+        true
+      );
+      return;
+    }
+
     try {
       const nextPayload = buildQRPayload({
         eventId: event.event_code,
@@ -481,15 +508,13 @@ export default function TeacherScreen() {
   const handleToggleEvent = async (event: CloudEvent) => {
     if (updatingEventId) return;
 
-    if (hasEventEnded(event)) {
-      showMessage(
-        'This event has already ended and cannot be reopened.',
-        true
-      );
+    const isEnded = hasEventEnded(event);
+    const nextStatus = event.status === 'closed' ? 'open' : 'closed';
+
+    if (isEnded) {
+      showMessage('This event has ended and cannot be reopened.', true);
       return;
     }
-
-    const nextStatus = event.status === 'closed' ? 'open' : 'closed';
 
     setUpdatingEventId(event.id);
     setMessage(null);
@@ -848,6 +873,10 @@ export default function TeacherScreen() {
                 ? 'CLOSED'
                 : 'OPEN';
 
+            // Admins can edit ended events; teachers cannot.
+            const teacherCannotEditEnded =
+              role === 'teacher' && isEnded;
+
             return (
               <View key={event.id} style={styles.eventCard}>
                 <View style={styles.eventCardHeader}>
@@ -905,21 +934,26 @@ export default function TeacherScreen() {
                 <View style={styles.eventCardButtonContainer}>
                   <AppButton
                     theme="primary"
-                    title="View QR Code"
-                    icon="qr-code-outline"
+                    title={isEnded ? 'Event Ended' : 'View QR Code'}
+                    icon={
+                      isEnded
+                        ? 'checkmark-circle-outline'
+                        : 'qr-code-outline'
+                    }
                     onPress={() => handleViewQR(event)}
+                    disabled={creating || !!updatingEventId || isEnded}
                   />
 
                   <View style={styles.secondaryEventButton}>
                     <AppButton
                       theme="primary"
                       title={
-                        role === 'teacher' && isEnded
+                        teacherCannotEditEnded
                           ? 'Event Ended'
                           : 'Edit Event'
                       }
                       icon={
-                        role === 'teacher' && isEnded
+                        teacherCannotEditEnded
                           ? 'checkmark-circle-outline'
                           : 'create-outline'
                       }
@@ -927,7 +961,7 @@ export default function TeacherScreen() {
                       disabled={
                         creating ||
                         !!updatingEventId ||
-                        (role === 'teacher' && isEnded)
+                        teacherCannotEditEnded
                       }
                     />
                   </View>
@@ -948,7 +982,7 @@ export default function TeacherScreen() {
                         isUpdating
                           ? 'time-outline'
                           : isEnded
-                            ? 'checkmark-circle-outline'
+                            ? 'time-outline'
                             : isClosed
                               ? 'lock-open-outline'
                               : 'lock-closed-outline'

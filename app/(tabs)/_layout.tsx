@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { Tabs, router } from 'expo-router';
@@ -10,6 +9,7 @@ import { getProfile, type Role } from '@/lib/profiles';
 
 export default function TabLayout() {
   const { user, loading: authLoading } = useAuth();
+
   const [role, setRole] = useState<Role | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
 
@@ -20,15 +20,11 @@ export default function TabLayout() {
       if (authLoading) return;
 
       if (!user) {
-        if (active) {
-          setRole(null);
-          setProfileLoading(false);
-          router.replace('/login');
-        }
+        setRole(null);
+        setProfileLoading(false);
+        router.replace('/login');
         return;
       }
-
-      setProfileLoading(true);
 
       try {
         const profile = await getProfile(user.id);
@@ -37,14 +33,13 @@ export default function TabLayout() {
 
         if (!profile) {
           setRole(null);
-          setProfileLoading(false);
           router.replace('/login');
           return;
         }
 
         setRole(profile.role);
       } catch (error) {
-        console.error('Could not load user role:', error);
+        console.error('Could not load profile role:', error);
 
         if (active) {
           setRole(null);
@@ -197,6 +192,21 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? 'people' : 'people-outline'}
+              color={color}
+              size={24}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="reports"
+        options={{
+          title: 'Reports',
+          href: isAdmin ? '/reports' : null,
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'bar-chart' : 'bar-chart-outline'}
               color={color}
               size={24}
             />
